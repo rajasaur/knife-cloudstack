@@ -136,9 +136,8 @@ if [ ! "${cs_confirm}" == "0" ]; then clear; exit 1; fi
 
 if [ "$cs_os_name" == "windows" ]
 then
-  echo Launching Windows instance and using WINRM to bootstrap.
-  knife cs server create $cs_node_name --node-name "$cs_node_name" --template "$cs_template_name" --service "$cs_service_name" --zone "$cs_zone_name" --network "$cs_network_name" --bootstrap-protocol winrm --cloudstack-password --environment $cs_environment_name
-
+  echo Not supported in this fork. Plesae use the knife-cloudstack original repo
+  exit 1
 else
   echo Launching Linux instance and using SSH to bootstrap.
   knife cs server create $cs_node_name --node-name "$cs_node_name" --template "$cs_template_name" --service "$cs_service_name" --zone "$cs_zone_name" --network "$cs_network_name"  --bootstrap-protocol ssh --cloudstack-password --environment "$cs_environment_name"

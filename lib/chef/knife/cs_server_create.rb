@@ -19,37 +19,27 @@
 #
 
 require 'chef/knife/cs_base'
-require 'chef/knife/winrm_base'
 
 module KnifeCloudstack
   class CsServerCreate < Chef::Knife
 
     include Chef::Knife::KnifeCloudstackBase
-    include Chef::Knife::WinrmBase
 
     # Seconds to delay between detecting ssh and initiating the bootstrap
     BOOTSTRAP_DELAY = 20
-    #The machine will reboot once so we need to handle that
-    WINRM_BOOTSTRAP_DELAY = 200
 
     # Seconds to wait between ssh pings
     SSH_POLL_INTERVAL = 10
 
     deps do
       require 'chef/knife/bootstrap'
-      require 'chef/knife/bootstrap_windows_winrm'
-      require 'chef/knife/bootstrap_windows_ssh'
-      require 'chef/knife/core/windows_bootstrap_context'
-      require 'chef/knife/winrm'
       require 'socket'
       require 'net/ssh/multi'
       require 'chef/knife'
       require 'chef/knife/bootstrap'
       require 'chef/json_compat'
       require 'knife-cloudstack/connection'
-      require 'winrm'
       require 'httpclient'
-      require 'em-winrm'
       Chef::Knife::Bootstrap.load_deps
     end
 
@@ -190,7 +180,7 @@ module KnifeCloudstack
 
     option :bootstrap_protocol,
            :long => "--bootstrap-protocol protocol",
-           :description => "Protocol to bootstrap windows servers. options: winrm/ssh",
+           :description => "Protocol to bootstrap servers. options: ssh",
            :default => "ssh"
 
     option :fqdn,
@@ -207,15 +197,6 @@ module KnifeCloudstack
         exit 1
       end
       validate_options
-
-      if @windows_image and locate_config_value(:kerberos_realm)
-        Chef::Log.debug("Load additional gems for AD/Kerberos Authentication")
-        if @windows_platform
-          require 'em-winrs'
-        else
-          require 'gssapi'
-        end
-      end
 
       $stdout.sync = true
 
@@ -262,12 +243,6 @@ module KnifeCloudstack
           sleep BOOTSTRAP_DELAY
           puts "\n"
         }
-      else
-        print "\n#{ui.color("Waiting for winrm to be active", :magenta)}"
-        print(".") until tcp_test_winrm(public_ip,locate_config_value(:winrm_port)) {
-          sleep WINRM_BOOTSTRAP_DELAY
-          puts("\n")
-        }
       end
 
       object_fields = []
@@ -292,22 +267,11 @@ module KnifeCloudstack
         Resolv.getname(ip_addr)
     end
 
-    def is_image_windows?
-        template = connection.get_template(locate_config_value(:cloudstack_template))
-        if !template
-          ui.error("Template: #{template} does not exist")
-          exit 1
-        end
-        return template['ostypename'].scan('Windows').length > 0
-    end
-
     def validate_options
       unless locate_config_value :cloudstack_template
         ui.error "Cloudstack template not specified"
         exit 1
       end
-      @windows_image = is_image_windows?
-      @windows_platform = is_platform_windows?
 
       unless locate_config_value :cloudstack_service
         ui.error "Cloudstack service offering not specified"
@@ -323,20 +287,6 @@ module KnifeCloudstack
             exit 1
           end
           @bootstrap_protocol = 'ssh'
-        elsif locate_config_value(:bootstrap_protocol) == 'winrm'
-          if not @windows_image
-            ui.error("Only Windows Images support WinRM protocol for bootstrapping.")
-            exit 1
-          end
-          winrm_user = locate_config_value :winrm_user
-          winrm_password = locate_config_value :winrm_password
-          winrm_transport = locate_config_value :winrm_transport
-          winrm_port = locate_config_value :winrm_port
-          unless (winrm_user && winrm_transport && winrm_port) && (locate_config_value(:cloudstack_password) || winrm_password)
-            ui.error("WinRM User, Password, Transport and Port are compulsory parameters")
-            exit 1
-          end
-          @bootstrap_protocol = 'winrm'
         end
       end
     end
@@ -439,27 +389,6 @@ module KnifeCloudstack
       end
     end
 
-    def tcp_test_winrm(hostname, port)
-      TCPSocket.new(hostname, port)
-      return true
-      rescue SocketError
-        sleep 2
-        false
-      rescue Errno::ETIMEDOUT
-        false
-      rescue Errno::EPERM
-        false
-      rescue Errno::ECONNREFUSED
-        sleep 2
-        false
-      rescue Errno::EHOSTUNREACH
-        sleep 2
-        false
-      rescue Errno::ENETUNREACH
-        sleep 2
-        false
-    end
-
     #noinspection RubyArgCount,RubyResolve
     def is_ssh_open?(ip)
       s = Socket.new(Socket::AF_INET, Socket::SOCK_STREAM, 0)
@@ -489,53 +418,9 @@ module KnifeCloudstack
       end
     end
 
-    def is_platform_windows?
-      return RUBY_PLATFORM.scan('w32').size > 0
-    end
-
     def bootstrap(server, public_ip)
-      if @windows_image
-        Chef::Log.debug("Windows Bootstrapping")
-        bootstrap_for_windows_node(server, public_ip)
-      else
-        Chef::Log.debug("Linux Bootstrapping")
-        bootstrap_for_node(server, public_ip)
-      end
-    end
-
-    def bootstrap_for_windows_node(server, fqdn)
-      if locate_config_value(:bootstrap_protocol) == 'winrm'
-        bootstrap = Chef::Knife::BootstrapWindowsWinrm.new
-        if locate_config_value(:kerberos_realm)
-          #Fetch AD/WINS based fqdn if any for Kerberos-based Auth
-          private_ip_address = connection.get_server_default_nic(server)["ipaddress"]
-          fqdn = locate_config_value(:fqdn) || fetch_server_fqdn(private_ip_address)
-        end
-        bootstrap.name_args = [fqdn]
-        bootstrap.config[:winrm_user] = locate_config_value(:winrm_user) || 'Administrator'
-        locate_config_value(:cloudstack_password) ? bootstrap.config[:winrm_password] = server['password'] : bootstrap.config[:winrm_password] = locate_config_value(:winrm_password)
-        bootstrap.config[:winrm_transport] = locate_config_value(:winrm_transport)
-        bootstrap.config[:winrm_port] = locate_config_value(:winrm_port)
-      elsif locate_config_value(:bootstrap_protocol) == 'ssh'
-        bootstrap = Chef::Knife::BootstrapWindowsSsh.new
-        if locate_config_value(:cloudstack_password)
-          bootstrap.config[:ssh_user] = locate_config_value(:ssh_user) || 'Administrator'
-        else
-          bootstrap.config[:ssh_user] = locate_config_value(:ssh_user)
-        end
-        locate_config_value(:cloudstack_password) ? bootstrap.config[:ssh_password] = server['password'] : bootstrap.config[:ssh_password] = locate_config_value(:ssh_password)
-        bootstrap.config[:ssh_port] = locate_config_value(:ssh_port)
-        bootstrap.config[:identity_file] = locate_config_value(:identity_file)
-        bootstrap.config[:no_host_key_verify] = locate_config_value(:no_host_key_verify)
-      else
-        ui.error("Unsupported Bootstrapping Protocol. Supported : winrm, ssh")
-        exit 1
-      end
-      bootstrap.config[:environment] = locate_config_value(:environment)
-      bootstrap.config[:chef_node_name] = config[:chef_node_name] || server['id']
-      bootstrap.config[:encrypted_data_bag_secret] = config[:encrypted_data_bag_secret]
-      bootstrap.config[:encrypted_data_bag_secret_file] = config[:encrypted_data_bag_secret_file]
-      bootstrap_common_params(bootstrap)
+      Chef::Log.debug("Linux Bootstrapping")
+      bootstrap_for_node(server, public_ip)
     end
 
     def bootstrap_common_params(bootstrap)
